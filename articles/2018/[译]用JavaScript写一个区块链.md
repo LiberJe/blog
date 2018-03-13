@@ -263,7 +263,7 @@ savjeeCoin.addBlock(new Block(2, "20/07/2017", { amount: 8 }));
 
 如果你创建了一个难度为5的区块链实例，你会发现你的电脑会花费大概十秒钟来挖矿。随着难度的提升，你的防御攻击的保护程度越高。
 
-## 放弃
+## 免责声明
 
 就像之前说的：这绝不是一个完整的区块链。它仍然缺少很多功能（像P2P网路）。这只是为了说明区块链的工作原理。
 
@@ -271,3 +271,180 @@ savjeeCoin.addBlock(new Block(2, "20/07/2017", { amount: 8 }));
 
 # Part3 交易与挖矿奖励
 
+在前面两部分我们创建了一个简单的区块链，并且加入了POW来抵御攻击。然而我们在途中也偷了懒：我们的区块链只能在一个区块中存储一笔交易，而且矿工没有奖励。现在，让我们解决这个问题！
+
+## 重构区块类
+
+现在一个区块拥有`index`,`previousHash`,`timestamp`,`data`,`hash`和`nonce`属性。这个`index`属性并不是很有用，事实上我甚至不知道为什么开始我要将它添加进去。所以我把它移除了，同时将`data`改名为`transactions`来更语义化。
+
+```
+class Block{
+  constructor(timestamp, transactions, previousHash = '') {
+    this.previousHash = previousHash;
+    this.timestamp = timestamp;
+    this.transactions = transactions;
+    this.hash = this.calculateHash();
+    this.nonce = 0;
+  }
+}
+```
+
+当我们改变区块类时，我们也必须更改`calculateHash()`函数。现在它还在使用老旧的`index`和`data`属性。
+
+```
+calculateHash() {
+  return SHA256(this.previousHash + this.timestamp + JSON.stringify(this.transactions) + this.nonce).toString();
+}
+```
+
+## 交易类
+
+在区块内，我们将可以存储多笔交易。因此我们还需要定义一个交易类，一边我们可以锁定交易应当具有的属性：
+
+```
+class Transaction{
+  constructor(fromAddress, toAddress, amount){
+    this.fromAddress = fromAddress;
+    this.toAddress = toAddress;
+    this.amount = amount;
+  }
+}
+```
+
+这个交易例子非常的简单，仅仅包含了发起方（`fromAddress`）和接受方（`toAddress`）以及数量。如果有需求，你也可以在里面加入更多字段，不过这个只是为了最小实现。
+
+## 调整我们的区块链
+
+当前的最大任务：调整我们的区块链来适应这些新变化。我们需要做的第一件事就是存储待处理交易的地方。
+
+正如你所知道的，由于POW，区块链可以稳定的创建区块。在比特币的场景下，难度被设置成大约每10分钟创建一个新区块。但是，是可以在创造两个区块之间提交新的交易。
+
+为了做到这一点，首先需要改变我们区块链的构造函数，以便他可以存储待处理的交易。我们还将创造一个新的属性，用于定义矿工获得多少钱作为奖励：
+
+```
+class Blockchain{
+  constructor() {
+    this.chain = [this.createGenesisBlock()];
+    this.difficulty = 5;
+
+    // 在区块产生之间存储交易的地方
+    this.pendingTransactions = [];
+
+    // 挖矿回报
+    this.miningReward = 100;
+  }
+}
+```
+
+下一步，我们将调整我们的`addBlock()`方法。不过我的调整是指删掉并重写它！我们将不再允许人们直接为链上添加区块。相反，他们必须将交易添加至下一个区块中。而且我们将`addBlock()`更名为`createTransaction()`，这看起来更语义化：
+
+```
+createTransaction(transaction) {
+  // 这里应该有一些校验!
+
+  // 推入待处理交易数组
+  this.pendingTransactions.push(transaction);
+}
+```
+
+## 挖矿
+
+人们现在可以将新的交易添加到待处理交易的列表中。但无论如何，我们需要将他们清理掉并移入实际的区块中。为此，我们来创建一个`minePendingTransactions()`方法。这个方法不仅会挖掘所有待交易的新区块，而且还会向采矿者发送奖励。
+
+```
+minePendingTransactions(miningRewardAddress) {
+  // 用所有待交易来创建新的区块并且开挖..
+  let block = new Block(Date.now(), this.pendingTransactions);
+  block.mineBlock(this.difficulty);
+
+  // 将新挖的看矿加入到链上
+  this.chain.push(block);
+
+  // 重置待处理交易列表并且发送奖励
+  this.pendingTransactions = [
+      new Transaction(null, miningRewardAddress, this.miningReward)
+  ];
+}
+```
+
+请注意，该方法采用了参数`miningRewardAddress`。如果你开始挖矿，你可以将你的钱包地址传递给此方法。一旦成功挖到矿，系统将创建一个新的交易来给你挖矿奖励（在这个栗子里是100枚币）。
+
+有一点需要注意的是，在这个栗子中，我们将所有待处理交易一并添加到一个区块中。但实际上，由于区块的大小是有限制的，所以这是行不通的。在比特币里，一个区块的大小大概是2Mb。如果有更多的交易能够挤进一个区块，那么矿工可以选择哪些交易达成哪些交易不达成（通常情况下费用更高的交易容易获胜）。
+
+## 地址的余额
+
+在测试我们的代码钱让我们再做一件事！如果能够检查我们区块链上地址的余额将会更好。
+
+```
+getBalanceOfAddress(address){
+  let balance = 0; // you start at zero!
+
+  // 遍历每个区块以及每个区块内的交易
+  for(const block of this.chain){
+    for(const trans of block.transactions){
+
+      // 如果地址是发起方 -> 减少余额
+      if(trans.fromAddress === address){
+        balance -= trans.amount;
+      }
+
+      // 如果地址是接收方 -> 增加余额
+      if(trans.toAddress === address){
+        balance += trans.amount;
+      }
+    }
+  }
+
+  return balance;
+}
+```
+
+## 测试
+
+好吧，我们已经完成并可以最终一切是否可以正常工作！为此，我们创建了一些交易：
+
+```
+let savjeeCoin = new Blockchain();
+
+console.log('Creating some transactions...');
+savjeeCoin.createTransaction(new Transaction('address1', 'address2', 100));
+savjeeCoin.createTransaction(new Transaction('address2', 'address1', 50));
+```
+
+这些交易目前都处于等待状态，为了让他们得到证实，我们必须开始挖矿：
+
+```
+console.log('Starting the miner...');
+savjeeCoin.minePendingTransactions('xaviers-address');
+```
+
+当我们开始挖矿，我们也会传递一个我们想要获得挖矿奖励的地址。在这种情况下，我的地址是`xaviers-address`（非常复杂！）。
+
+之后，让我们检查一下`xaviers-address`的账户余额：
+
+```
+console.log('Balance of Xaviers address is', savjeeCoin.getBalanceOfAddress('xaviers-address'));
+// 输出: 0
+```
+
+我的账户输出竟然是0？！等等，为什么？难道我不应该得到我的挖矿奖励么？那么，如果你仔细观察代码，你会看到系统会创建一个交易，然后将您的挖矿奖励添加为新的待处理交易。这笔交易将会包含在下一个区块中。所以如果我们再次开始挖矿，我们将收到我们的100枚硬币奖励！
+
+```
+console.log('Starting the miner again!');
+savjeeCoin.minePendingTransactions("xaviers-address");
+
+console.log('Balance of Xaviers address is', savjeeCoin.getBalanceOfAddress('xaviers-address'));
+// 输出: 100
+```
+
+## 局限性与结论
+
+现在我们的区块链已经可以在一个区块上存储多笔交易，并且可以为矿工带来回报。
+
+不过，还是有一些不足：发送货币是，我们不检查发起人是否有足够的余额来实际进行交易。然而，这其实是一件容易解决的事情。我们也没有创建一个新的钱包和签名交易（传统上用公钥/私钥加密完成）。
+
+## 免责声明 & 源代码
+
+我想指出的是，这绝不是一个完整的区块链实现！它仍然缺少很多功能。这只是为了验证一些概念来帮助您来了解区块链的工作原理。
+
+该项目的源代码就放在我的[GitHub](https://github.com/SavjeeTutorials/SavjeeCoin)
