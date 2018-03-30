@@ -7,4 +7,5 @@
 ## 联系方式
 
 * Email: jelewine@gmail.com;
+* weibo: [JeLewine](https://weibo.com/jly199518)
 * Battle.net: 逆图#5671;
